@@ -1,33 +1,59 @@
-name: Daily Stock Analysis Report
+name: Global Market Monitor Parallel
 
 on:
   schedule:
-    # 台北時間週一至週五 13:30 執行 (UTC 05:30)
-    - cron: '30 5 * * 1-5'
+    # 台北時間週一至週五 18:30 (UTC 10:30)
+    # 此時台股已收盤，美股前一晚數據也已完整
+    - cron: '30 10 * * 1-5'
   workflow_dispatch: 
 
 jobs:
-  run-analysis:
+  # --- 任務 A：美國市場 (獨立機器) ---
+  us-market:
+    name: 🇺🇸 US Market Analysis
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 檢出程式碼
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: 🐍 設定 Python 環境
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 🔤 安裝中文字體與環境相依套件
+      - name: Environment Setup
         run: |
-          # 安裝開源中文字體以支援繪圖顯示
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
-          
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas yfinance requests lxml tqdm resend matplotlib numpy
 
-      - name: 📊 執行監控分析程式
+      - name: Run US Analysis
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-        run: python main.py
+        run: python main.py --market us-share
+
+  # --- 任務 B：台灣市場 (獨立機器) ---
+  taiwan-market:
+    name: 🇹🇼 Taiwan Market Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Environment Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install pandas yfinance requests lxml tqdm resend matplotlib numpy
+
+      - name: Run TW Analysis
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: python main.py --market tw-share
