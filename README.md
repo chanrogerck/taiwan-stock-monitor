@@ -66,6 +66,8 @@ A professional-grade, multi-market automated monitoring and data warehousing sys
 - **Automation**: GitHub Actions (Matrix Strategy)
 - **Cloud Sync**: Google Drive API
 
+
+
 ⚠️ Data Integrity & Learning Note (資料完整性與練習說明)
 [!IMPORTANT] [English] Raw Data vs. Production Ready This repository currently provides Raw Data without deep post-processing. Users may encounter anomalies such as Corporate Action Gaps (unadjusted splits) or Resume Jumps (suspension noise) that may lead to distorted return calculations (e.g., ghost >100% monthly returns).
 
@@ -83,7 +85,6 @@ We deliberately keep the data "raw" to make it a perfect Data Cleaning Practice 
 [Ping-Pong Filter]：過濾單日 +/- 40% 的異常反轉（通常是數據雜訊）。
 
 [Volume Guard]：剔除成交量極低、不具代表性的「殭屍股」。
-
 
 ## ⚖️ License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
