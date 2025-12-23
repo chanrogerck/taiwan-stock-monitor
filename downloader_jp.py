@@ -34,24 +34,21 @@ os.makedirs(LIST_DIR, exist_ok=True)
 # 狀態管理檔案
 MANIFEST_CSV = Path(LIST_DIR) / "jp_manifest.csv"
 LIST_ALL_CSV = Path(LIST_DIR) / "jp_list_all.csv"
-THREADS = 4 # 建議維持在 4-8 之間，避免並發太高被鎖 IP
+THREADS = 4 # GitHub Actions 環境建議 4，避免封 IP
 
 def log(msg: str):
     print(f"{pd.Timestamp.now():%H:%M:%S}: {msg}")
 
 def get_tse_list():
-    """獲取日股清單：具備門檻檢查與欄位識別"""
-    threshold = 3000 # 日股 (TSE) 標的應在 3800 檔以上
-    log("📡 正在讀取 tokyo-stock-exchange 套件資料...")
+    """獲取日股清單：具備門檻檢查與歷史快取備援"""
+    threshold = 3800 
+    log("📡 正在獲取東京交易所標的清單...")
     try:
         df = pd.read_csv(tse.csv_file_path)
-        
-        # 尋找代碼與名稱欄位 (支援日文標頭)
         code_col = next((c for c in ['コード', 'Code', 'code', 'Local Code'] if c in df.columns), None)
         name_col = next((c for c in ['銘柄名', 'Name', 'name', 'Company Name'] if c in df.columns), None)
 
-        if not code_col:
-            raise KeyError(f"無法定位代碼欄位。現有欄位: {list(df.columns)}")
+        if not code_col: raise KeyError("無法定位代碼欄位")
 
         res = []
         for _, row in df.iterrows():
@@ -65,100 +62,122 @@ def get_tse_list():
         
         final_df = pd.DataFrame(res).drop_duplicates(subset=['code'])
         
-        # --- 🚀 防呆檢查：數量門檻 ---
         if len(final_df) < threshold:
-            log(f"⚠️ 警告：獲取清單數量異常 ({len(final_df)} 檔)，低於門檻 {threshold}")
-            # 若已有舊清單，則讀取舊清單作為備援
-            if LIST_ALL_CSV.exists():
-                log("🔄 使用歷史清單快取作為備援...")
-                return pd.read_csv(LIST_ALL_CSV)
+            log(f"⚠️ 數量異常 ({len(final_df)})，嘗試讀取歷史快取...")
+            if LIST_ALL_CSV.exists(): return pd.read_csv(LIST_ALL_CSV)
         else:
             final_df.to_csv(LIST_ALL_CSV, index=False, encoding='utf-8-sig')
             log(f"✅ 成功獲取 {len(final_df)} 檔日股清單")
-            
         return final_df
 
     except Exception as e:
         log(f"❌ 清單獲取失敗: {e}")
-        if LIST_ALL_CSV.exists():
-            log("🔄 讀取歷史清單快取...")
-            return pd.read_csv(LIST_ALL_CSV)
-        return pd.DataFrame()
+        return pd.read_csv(LIST_ALL_CSV) if LIST_ALL_CSV.exists() else pd.DataFrame()
 
 def build_manifest(df_list):
-    """建立或載入續跑清單"""
+    """建立續跑清單，並自動識別已下載完成的檔案"""
     if df_list.empty: return pd.DataFrame()
 
     if MANIFEST_CSV.exists():
-        return pd.read_csv(MANIFEST_CSV)
+        mf = pd.read_csv(MANIFEST_CSV)
+        # 確保新的 code 若不在 mf 裡則加入
+        new_codes = df_list[~df_list['code'].astype(str).isin(mf['code'].astype(str))]
+        if not new_codes.empty:
+            new_codes['status'] = 'pending'
+            mf = pd.concat([mf, new_codes], ignore_index=True)
+        return mf
     
     df_list["status"] = "pending"
+    # 掃描資料夾，將已存在的檔案標記為 done
     existing_files = {f.split(".")[0] for f in os.listdir(DATA_DIR) if f.endswith(".T.csv")}
-    if existing_files:
-        df_list.loc[df_list['code'].astype(str).isin(existing_files), "status"] = "done"
+    df_list.loc[df_list['code'].astype(str).isin(existing_files), "status"] = "done"
     
     df_list.to_csv(MANIFEST_CSV, index=False)
     return df_list
 
 def download_one(row_tuple):
-    """單檔下載：加入隨機延遲保護"""
+    """強化版下載：加入 3 次重試機制與動態延遲"""
     idx, row = row_tuple
     code = str(row['code']).zfill(4)
     symbol = f"{code}.T"
     out_path = os.path.join(DATA_DIR, f"{code}.T.csv")
     
-    try:
-        # --- 🚀 關鍵修改：隨機等待防止限流 ---
-        # 日本市場建議 0.3 ~ 0.8 秒
-        time.sleep(random.uniform(0.3, 0.8)) 
-        
-        tk = yf.Ticker(symbol)
-        df_raw = tk.history(period="2y", interval="1d", auto_adjust=False)
-        
-        if df_raw is not None and not df_raw.empty:
-            df_raw.reset_index(inplace=True)
-            df_raw.columns = [c.lower() for c in df_raw.columns]
-            if 'date' in df_raw.columns:
-                df_raw['date'] = pd.to_datetime(df_raw['date'], utc=True).dt.tz_localize(None)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 隨機延遲保護：0.5 ~ 1.5 秒
+            time.sleep(random.uniform(0.5, 1.5)) 
             
-            cols = ['date','open','high','low','close','volume']
-            df_final = df_raw[[c for c in cols if c in df_raw.columns]]
-            df_final.to_csv(out_path, index=False)
-            return idx, "done"
-        return idx, "empty"
-    except Exception:
-        return idx, "failed"
+            tk = yf.Ticker(symbol)
+            # 下載 2 年數據
+            df_raw = tk.history(period="2y", interval="1d", auto_adjust=True, timeout=20)
+            
+            if df_raw is not None and not df_raw.empty:
+                df_raw.reset_index(inplace=True)
+                df_raw.columns = [c.lower() for c in df_raw.columns]
+                
+                if 'date' in df_raw.columns:
+                    df_raw['date'] = pd.to_datetime(df_raw['date'], utc=True).dt.tz_localize(None)
+                
+                # 僅保留核心欄位，節省空間
+                cols = ['date','open','high','low','close','volume']
+                df_final = df_raw[[c for c in cols if c in df_raw.columns]]
+                df_final.to_csv(out_path, index=False, encoding='utf-8-sig')
+                return idx, "done"
+            
+            # 若為空數據且是最後一次嘗試
+            if attempt == max_retries - 1:
+                return idx, "empty"
+
+        except Exception:
+            if attempt == max_retries - 1:
+                return idx, "failed"
+            # 失敗後冷卻時間增加
+            time.sleep(random.randint(3, 7))
+            
+    return idx, "failed"
 
 def main():
-    log("🇯🇵 日本股市 K 線下載器啟動")
+    log("🇯🇵 日本股市 K 線同步器啟動 (GitHub Actions 高成功率版)")
     df_list = get_tse_list()
-    if df_list.empty: return
-
-    mf = build_manifest(df_list)
-    todo = mf[mf["status"] != "done"]
-    if todo.empty:
-        log("✅ 所有日股資料已是最新。")
+    if df_list.empty: 
+        log("🚨 無法取得清單，結束程序。")
         return
 
-    log(f"📝 待處理標的數：{len(todo)} 檔")
+    mf = build_manifest(df_list)
+    # 僅處理 pending 與 failed 的標的
+    todo = mf[~mf["status"].isin(["done", "empty"])]
+    
+    if todo.empty:
+        log("✅ 所有日股資料已是最新，無需下載。")
+        return
+
+    log(f"📝 待處理標的數：{len(todo)} 檔 (包含之前失敗重試)")
 
     with ThreadPoolExecutor(max_workers=THREADS) as executor:
         futures = {executor.submit(download_one, item): item for item in todo.iterrows()}
         pbar = tqdm(total=len(todo), desc="日股下載進度")
         
         count = 0
-        for f in as_completed(futures):
-            idx, status = f.result()
-            mf.at[idx, "status"] = status
-            count += 1
-            pbar.update(1)
-            
-            if count % 50 == 0:
-                mf.to_csv(MANIFEST_CSV, index=False)
-        pbar.close()
+        try:
+            for f in as_completed(futures):
+                idx, status = f.result()
+                mf.at[idx, "status"] = status
+                count += 1
+                pbar.update(1)
+                
+                # 每 100 檔強制存檔一次 Manifest
+                if count % 100 == 0:
+                    mf.to_csv(MANIFEST_CSV, index=False)
+        except KeyboardInterrupt:
+            log("🛑 使用者中斷，正在儲存進度...")
+        finally:
+            mf.to_csv(MANIFEST_CSV, index=False)
+            pbar.close()
 
-    mf.to_csv(MANIFEST_CSV, index=False)
-    log(f"🏁 任務結束。成功下載：{len(mf[mf['status'] == 'done'])} 檔")
+    success_count = len(mf[mf['status'] == 'done'])
+    log(f"📊 下載報告: 成功={success_count}, 失敗/空值={len(mf) - success_count}")
+    log("✨ 準備進入矩陣分析階段...")
 
 if __name__ == "__main__":
     main()
