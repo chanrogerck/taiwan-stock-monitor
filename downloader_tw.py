@@ -16,7 +16,7 @@ DATA_SUBDIR = "dayK"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data", MARKET_CODE, DATA_SUBDIR)
 
-# ✅ 效能優化：調低至 2-3，配合亂數延遲可有效避開 Yahoo 封鎖
+# ✅ 效能優化：維持 3 執行緒，配合亂數延遲可有效避開 Yahoo 封鎖
 MAX_WORKERS = 3 
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -58,19 +58,17 @@ def download_stock_data(item):
         if len(parts) < 2: return {"status": "error", "tkr": item, "msg": "Format error"}
         
         yf_tkr, name = parts
-        # 移除檔名非法字元
         safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '_', '-')]).strip()
         out_path = os.path.join(DATA_DIR, f"{yf_tkr}_{safe_name}.csv")
         
         if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
             return {"status": "exists", "tkr": yf_tkr}
 
-        # ✅ 關鍵 1: 初始隨機休眠 (0.5~1.15秒)，打亂請求頻率
+        # 隨機休眠避開偵測
         time.sleep(random.uniform(0.5, 1.15))
 
         tk = yf.Ticker(yf_tkr)
         
-        # ✅ 關鍵 2: 雙重重試機制
         for attempt in range(2):
             try:
                 hist = tk.history(period="2y", timeout=15)
@@ -80,16 +78,13 @@ def download_stock_data(item):
                     hist.to_csv(out_path, index=False, encoding='utf-8-sig')
                     return {"status": "success", "tkr": yf_tkr}
                 
-                # 如果是 Empty，可能是該代號真的沒資料
                 if attempt == 1: return {"status": "empty", "tkr": yf_tkr}
                 
             except Exception as e:
-                # 如果遇到 Rate Limit，休眠時間加長
                 if "Rate limited" in str(e):
                     time.sleep(random.uniform(15, 30))
                 if attempt == 1: return {"status": "error", "tkr": yf_tkr, "msg": str(e)}
             
-            # 重試前的隨機長休眠
             time.sleep(random.uniform(3, 7))
 
         return {"status": "empty", "tkr": yf_tkr}
@@ -97,6 +92,7 @@ def download_stock_data(item):
         return {"status": "error", "tkr": yf_tkr, "msg": str(e)}
 
 def main():
+    start_time = time.time()
     items = get_full_stock_list()
     log(f"🚀 啟動防封鎖下載模式，目標總數: {len(items)}")
     
@@ -105,7 +101,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(download_stock_data, it): it for it in items}
-        pbar = tqdm(total=len(items), desc="下載進度")
+        pbar = tqdm(total=len(items), desc="台股下載進度")
         
         for future in as_completed(futures):
             res = future.result()
@@ -116,25 +112,38 @@ def main():
                 error_details[msg] = error_details.get(msg, 0) + 1
             pbar.update(1)
             
-            # ✅ 額外保險：每下載 100 檔強制休息，清理連線
+            # 每 100 檔強制休息，清理連線防止 IP 被黑
             if pbar.n % 100 == 0:
                 time.sleep(random.uniform(5, 10))
                 
         pbar.close()
     
+    # --- 💡 關鍵統計彙整：準備回傳給 main.py 與 notifier ---
+    total_expected = len(items)
+    effective_success = stats['success'] + stats['exists']
+    fail_count = stats['error'] + stats['empty']
+
+    download_stats = {
+        "total": total_expected,
+        "success": effective_success,
+        "fail": fail_count
+    }
+
+    duration = (time.time() - start_time) / 60
     print("\n" + "="*50)
-    log("📊 最終防封鎖下載報告:")
-    print(f"   - ✅ 成功下載: {stats['success']}")
-    print(f"   - 📁 已存在跳過: {stats['exists']}")
-    print(f"   - 🔍 Yahoo無資料 (Empty): {stats['empty']}")
-    print(f"   - ❌ 執行失敗 (Error): {stats['error']}")
+    log(f"📊 台股下載任務完成 (耗時 {duration:.1f} 分鐘)")
+    print(f"   - 應收總數: {total_expected}")
+    print(f"   - 成功(含舊檔): {effective_success}")
+    print(f"   - 失敗/無數據: {fail_count}")
+    print(f"📈 數據完整度: {(effective_success/total_expected)*100:.2f}%")
+    
     if error_details:
-        print("\n⚠️ 失敗原因分析:")
+        print("\n⚠️ 失敗原因簡析:")
         for msg, count in sorted(error_details.items(), key=lambda x: x[1], reverse=True):
             print(f"   - [{count}次]: {msg}")
     print("="*50 + "\n")
 
+    return download_stats # 🚀 回傳統計字典
+
 if __name__ == "__main__":
     main()
-
-
