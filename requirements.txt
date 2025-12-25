@@ -1,20 +1,20 @@
+# --- 基礎數據處理 ---
 pandas
 numpy
-openpyxl
-lxml
-html5lib
-requests
-cryptography
-python-dotenv
+matplotlib
+
+# --- 數據獲取 (核心) ---
 yfinance
 tqdm
-akshare
-pykrx
-tokyo-stock-exchange
-finance-datareader  # 💡 修正：使用全小寫與連字號
 resend
-pyarrow
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-auth-oauthlib
+
+# --- 中國 A 股 ---
+akshare
+
+# --- 日本股市 (Tokyo Stock Exchange) ---
+
+tokyo-stock-exchange
+
+# --- 韓國股市 (Korea Exchange) ---
+# pykrx 是目前公認最強、最穩定的韓國股市套件
+pykrx
