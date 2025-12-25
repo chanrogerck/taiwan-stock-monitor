@@ -2,11 +2,11 @@ name: Global Market Monitor Parallel
 
 on:
   schedule:
-    - cron: '30 10 * * 1-5' # 台北時間 18:30 (UTC 10:30)
+    - cron: '30 10 * * 1-5' # 台北時間週一至週五 18:30 (UTC 10:30)
   workflow_dispatch:
     inputs:
       market_choice:
-        description: '選擇執行市場'
+        description: '選擇要執行的市場 (Select Market)'
         required: true
         default: 'all'
         type: choice
@@ -21,10 +21,11 @@ on:
 
 jobs:
   global-market-analysis:
+    # 這裡顯示的名稱會動態改變，例如 "🇹🇼 Taiwan Download"
     name: ${{ matrix.market.emoji }} ${{ matrix.market.name }} Download
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: false # 即使一個市場失敗，其他市場也要繼續跑
       matrix:
         market:
           - { id: "tw", name: "Taiwan", emoji: "🇹🇼" }
@@ -35,32 +36,36 @@ jobs:
           - { id: "kr", name: "Korea",  emoji: "🇰🇷" }
 
     steps:
+      # 1. 檢查代碼 (僅當符合手動選擇或排程時執行)
       - uses: actions/checkout@v4
         if: |
           github.event_name == 'schedule' || 
           github.event.inputs.market_choice == 'all' || 
           github.event.inputs.market_choice == matrix.market.id
 
-      - name: Set up Python
+      # 2. 設定 Python 環境
+      - name: Set up Python 3.11
         if: success()
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          cache: 'pip'
+          python-version: '3.11'
+          cache: 'pip' # 開啟快取功能，下次跑會快很多
 
+      # 3. 安裝必要套件 (解決 ModuleNotFoundError)
       - name: Install Dependencies
         if: success()
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # 4. 執行市場下載邏輯
       - name: Run Market Download
         if: success()
         env:
-          # 💡 這裡要把你在 GitHub Repo -> Settings -> Secrets 設好的變數接進去
+          # 💡 這裡將 GitHub Secrets 轉換為 Python 能讀取的環境變數
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
-        # 💡 注意這裡的傳參方式要跟你的 main.py 一致
+        # 💡 傳遞參數給 main.py (例如: python main.py hk)
         run: python main.py ${{ matrix.market.id }}
